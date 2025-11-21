@@ -128,7 +128,7 @@ export const JournalEditor: React.FC<JournalEditorProps> = ({ entry, onUpdate, o
           
           <div className="hidden md:block h-4 w-px bg-stone-200 mx-2"></div>
 
-          {/* PRIMARY BUTTON: Save Online */}
+          {/* PRIMARY BUTTON: Save Online (GREEN) */}
           <button 
             type="button"
             onClick={(e) => {
@@ -136,7 +136,7 @@ export const JournalEditor: React.FC<JournalEditorProps> = ({ entry, onUpdate, o
                 e.stopPropagation();
                 onSaveToCloud();
             }}
-            className="cursor-pointer flex items-center gap-2 px-4 py-2 bg-stone-900 hover:bg-stone-700 text-white rounded-full transition-all shadow-sm hover:shadow-md text-xs font-bold active:scale-95 whitespace-nowrap relative z-50"
+            className="cursor-pointer flex items-center gap-2 px-4 py-2 bg-green-600 hover:bg-green-700 text-white rounded-full transition-all shadow-sm hover:shadow-md text-xs font-bold active:scale-95 whitespace-nowrap relative z-50"
             title="Save to Google Drive"
           >
             <CloudUpload className="w-3.5 h-3.5" />

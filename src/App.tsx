@@ -519,8 +519,8 @@ export default function App() {
           <div className="fixed inset-0 z-[60] flex items-center justify-center p-4 bg-stone-900/20 backdrop-blur-sm animate-in fade-in duration-200">
             <div className="bg-white rounded-xl shadow-2xl border border-stone-100 p-6 max-w-sm w-full transform transition-all scale-100">
               <div className="flex items-center space-x-3 mb-4 text-stone-900">
-                <div className="p-2 bg-stone-100 rounded-full">
-                  <CloudUpload className="w-6 h-6" />
+                <div className="p-2 bg-green-50 rounded-full">
+                  <CloudUpload className="w-6 h-6 text-green-600" />
                 </div>
                 <h3 className="text-lg font-bold text-stone-900">Save to Drive</h3>
               </div>
@@ -549,7 +549,7 @@ export default function App() {
                 </button>
                 <button 
                   onClick={confirmManualSave}
-                  className="px-4 py-2.5 bg-stone-900 text-white text-sm font-medium rounded-lg hover:bg-stone-700 shadow-sm transition-colors"
+                  className="px-4 py-2.5 bg-green-600 text-white text-sm font-medium rounded-lg hover:bg-green-700 shadow-sm transition-colors"
                 >
                   Save
                 </button>
