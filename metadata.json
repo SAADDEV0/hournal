@@ -1,0 +1,5 @@
+{
+  "name": "ZenJournal",
+  "description": "A minimalist journaling app that syncs with Google Drive.",
+  "requestFramePermissions": []
+}
