@@ -1,3 +1,4 @@
+
 import React, { useEffect, useState, useRef, useCallback } from 'react';
 import { Layout } from './components/Layout';
 import { Sidebar } from './components/Sidebar';
@@ -7,7 +8,7 @@ import { JournalEntry } from './types';
 import { GOOGLE_CLIENT_ID, SCOPES, AUTOSAVE_INTERVAL_MS } from './constants';
 import { syncEntryToDrive, deleteEntryFromDrive, fetchAllEntriesFromDrive, AUTH_ERROR_MSG } from './services/driveService';
 import { getAllEntries, saveEntry, deleteEntry } from './services/storage';
-import { Cloud, Settings, AlertCircle, Loader2, Trash2, Smartphone, Globe, Copy, Check, RefreshCw } from 'lucide-react';
+import { Cloud, Settings, AlertCircle, Loader2, Trash2, Smartphone, Globe, Copy, Check, RefreshCw, CloudUpload } from 'lucide-react';
 
 export default function App() {
   // --- State ---
@@ -25,6 +26,10 @@ export default function App() {
   // Delete Confirmation State
   const [entryToDelete, setEntryToDelete] = useState<string | null>(null);
   const [isDeleting, setIsDeleting] = useState(false);
+
+  // Save To Cloud Modal State
+  const [showSaveModal, setShowSaveModal] = useState(false);
+  const [saveFileName, setSaveFileName] = useState('');
 
   // --- Refs ---
   const tokenClient = useRef<any>(null);
@@ -103,10 +108,6 @@ export default function App() {
       try {
           const cloudEntries = await fetchAllEntriesFromDrive(accessToken);
           
-          // Merge Strategy:
-          // 1. If Cloud entry exists locally, keep whichever has newer updatedAt
-          // 2. If Cloud entry is new, add it
-          
           const localMap = new Map<string, JournalEntry>(entries.map(e => [e.id, e]));
           let hasChanges = false;
           const mergedEntries = [...entries];
@@ -114,12 +115,10 @@ export default function App() {
           for (const cloudEntry of cloudEntries) {
               const localEntry = localMap.get(cloudEntry.id);
               if (!localEntry) {
-                  // New entry from cloud
                   mergedEntries.push(cloudEntry);
                   await saveEntry(cloudEntry);
                   hasChanges = true;
               } else if (cloudEntry.updatedAt > localEntry.updatedAt) {
-                  // Cloud is newer
                   const index = mergedEntries.findIndex(e => e.id === cloudEntry.id);
                   if (index !== -1) {
                       mergedEntries[index] = cloudEntry;
@@ -132,7 +131,6 @@ export default function App() {
           if (hasChanges) {
               mergedEntries.sort((a, b) => b.updatedAt - a.updatedAt);
               setEntries(mergedEntries);
-              // Update active entry ref if it was changed
               if (activeEntry) {
                  const updatedActive = mergedEntries.find(e => e.id === activeEntry.id);
                  if (updatedActive && updatedActive.updatedAt !== activeEntry.updatedAt) {
@@ -200,7 +198,48 @@ export default function App() {
     setEntryToDelete(null);
   };
 
-  // --- Save Logic ---
+  // --- Manual Save Logic ---
+  const handleManualSaveRequest = () => {
+    if (!isLoggedIn) {
+        // If not logged in, try to login
+        handleLogin();
+        return;
+    }
+    if (!activeEntry) return;
+    
+    // Default filename
+    const safeTitle = activeEntry.title.replace(/[/\\?%*:|"<>\x00-\x1F]/g, '_').trim() || 'Untitled';
+    const defaultName = activeEntry.driveFileName || `${safeTitle}.txt`;
+    
+    setSaveFileName(defaultName);
+    setShowSaveModal(true);
+  };
+
+  const confirmManualSave = async () => {
+    if (!activeEntry || !accessToken) return;
+    
+    // Update entry with the preferred filename
+    const updatedEntry = { ...activeEntry, driveFileName: saveFileName };
+    setActiveEntry(updatedEntry);
+    setEntries(prev => prev.map(e => e.id === updatedEntry.id ? updatedEntry : e));
+    await saveEntry(updatedEntry); // Save preference locally
+    
+    setShowSaveModal(false);
+    setIsSaving(true);
+    
+    try {
+        await syncEntryToDrive(updatedEntry, accessToken);
+        // Force update local state to reflect sync success if needed?
+    } catch (err: any) {
+        if (err.message === AUTH_ERROR_MSG) handleLogout();
+        console.error("Manual save failed", err);
+        alert("Failed to save to Drive. Please check connection.");
+    } finally {
+        setIsSaving(false);
+    }
+  };
+
+  // --- Auto Save Logic ---
   const handleUpdateEntry = (updated: JournalEntry) => {
     const entryWithTimestamp = { ...updated, updatedAt: Date.now() };
     setActiveEntry(entryWithTimestamp);
@@ -291,6 +330,7 @@ export default function App() {
     return (
       <div className="min-h-screen bg-paper flex items-center justify-center p-4">
         <div className="bg-white p-8 rounded-2xl shadow-xl max-w-md w-full border border-stone-100 max-h-[90vh] overflow-y-auto">
+          {/* Setup Form Content */}
           <div className="flex justify-center mb-6">
             <div className="bg-stone-100 p-4 rounded-full">
               <Settings className="w-8 h-8 text-stone-600" />
@@ -413,6 +453,7 @@ export default function App() {
                 <JournalEditor 
                     entry={activeEntry} 
                     onUpdate={handleUpdateEntry}
+                    onSaveToCloud={handleManualSaveRequest}
                     isSaving={isSaving}
                 />
             ) : (
@@ -425,6 +466,7 @@ export default function App() {
             )}
         </main>
 
+        {/* Delete Confirmation Modal */}
         {entryToDelete && (
           <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-stone-900/20 backdrop-blur-sm animate-in fade-in duration-200">
             <div className="bg-white rounded-xl shadow-2xl border border-stone-100 p-6 max-w-sm w-full transform transition-all scale-100">
@@ -448,6 +490,51 @@ export default function App() {
             </div>
           </div>
         )}
+
+        {/* Save To Cloud Modal */}
+        {showSaveModal && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-stone-900/20 backdrop-blur-sm animate-in fade-in duration-200">
+            <div className="bg-white rounded-xl shadow-2xl border border-stone-100 p-6 max-w-sm w-full transform transition-all scale-100">
+              <div className="flex items-center space-x-3 mb-4 text-blue-600">
+                <div className="p-2 bg-blue-50 rounded-full">
+                  <CloudUpload className="w-6 h-6" />
+                </div>
+                <h3 className="text-lg font-bold text-stone-900">Save to Drive</h3>
+              </div>
+              
+              <p className="text-stone-500 text-sm mb-4">
+                 Choose a specific filename for this entry in Google Drive.
+              </p>
+
+              <div className="mb-6">
+                  <label className="block text-xs font-bold text-stone-400 uppercase tracking-wider mb-1">Filename</label>
+                  <input 
+                    type="text" 
+                    value={saveFileName} 
+                    onChange={(e) => setSaveFileName(e.target.value)}
+                    className="w-full p-3 bg-stone-50 border border-stone-200 rounded-lg text-sm focus:outline-none focus:border-blue-400 font-mono"
+                  />
+                  <p className="text-[10px] text-stone-400 mt-1 text-right">.txt will be added automatically if missing</p>
+              </div>
+              
+              <div className="flex justify-end space-x-3">
+                <button 
+                  onClick={() => setShowSaveModal(false)}
+                  className="px-4 py-2.5 text-stone-600 text-sm font-medium hover:bg-stone-100 rounded-lg transition-colors"
+                >
+                  Cancel
+                </button>
+                <button 
+                  onClick={confirmManualSave}
+                  className="px-4 py-2.5 bg-blue-600 text-white text-sm font-medium rounded-lg hover:bg-blue-700 shadow-sm transition-colors"
+                >
+                  Save Now
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
       </div>
     </Layout>
   );

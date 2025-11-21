@@ -9,6 +9,7 @@ export interface JournalEntry {
   createdAt: number;
   updatedAt: number;
   images: JournalImage[];
+  driveFileName?: string; // Preferred filename for Google Drive
 }
 
 export interface JournalImage {

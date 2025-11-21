@@ -153,9 +153,15 @@ export async function syncEntryToDrive(entry: JournalEntry, accessToken: string)
         
     const fileContent = `Title: ${entry.title}\nDate: ${date.toLocaleString()}\n${moodStr}\n${entry.content}${imageMeta}`;
     
-    // Sanitize title for filename. Default to "Untitled" if empty.
+    // Determine Filename
+    // Priority: User's manually chosen name -> Title-based name -> Untitled
     const safeTitle = entry.title.replace(/[/\\?%*:|"<>\x00-\x1F]/g, '_').trim() || 'Untitled';
-    const desiredFileName = `${safeTitle}.txt`;
+    let desiredFileName = entry.driveFileName || `${safeTitle}.txt`;
+    
+    // Ensure extension
+    if (!desiredFileName.toLowerCase().endsWith('.txt')) {
+        desiredFileName += '.txt';
+    }
 
     // 5. Find existing file to update
     // We need to find the file wherever it is (Date folder OR Root folder for legacy rescue)
@@ -173,10 +179,6 @@ export async function syncEntryToDrive(entry: JournalEntry, accessToken: string)
         // B. ID Match (if entry.id is a Drive ID)
         const isDriveId = entry.id.length > 15 && isNaN(Number(entry.id)); 
         if (isDriveId) {
-             // If we are searching the folder the file is actually in, getting it by ID checks that constraint implicitly if we check parents later,
-             // but `files.get` doesn't support parent filtering directly. 
-             // So we stick to finding by name variants if ID isn't a property yet.
-             // Actually, if entry.id IS the file ID, we don't need to search. We just check if it exists.
              try {
                  const res = await driveFetch(`${BASE_URL}/files/${entry.id}?fields=id,name,parents,trashed`, accessToken);
                  const f = await res.json();
@@ -185,7 +187,13 @@ export async function syncEntryToDrive(entry: JournalEntry, accessToken: string)
         }
 
         // C. Name Match (Legacy / Fallback)
-        // 1. Desired Name
+        // If we have a specific driveFileName, check that first
+        if (entry.driveFileName) {
+            const f = await findByName(entry.driveFileName, folderId, "mimeType = 'text/plain'", accessToken);
+            if (f) return f;
+        }
+
+        // 1. Desired Name (derived from title if no driveFileName)
         let f = await findByName(desiredFileName, folderId, "mimeType = 'text/plain'", accessToken);
         if (f) return f;
         
@@ -206,7 +214,6 @@ export async function syncEntryToDrive(entry: JournalEntry, accessToken: string)
     // Step 5b: If not found, Search in ROOT Folder (Rescue misplaced files)
     if (!foundFile) {
         foundFile = await searchInFolder(rootId);
-        // If found in root, we will need to move it
     }
 
     // 6. Update, Rename, Move
@@ -229,7 +236,7 @@ export async function syncEntryToDrive(entry: JournalEntry, accessToken: string)
         });
 
         // RENAME & SET PROPERTY
-        // We enforce this every time to ensure consistency
+        // We enforce the name matches desiredFileName
         if (foundFile.name !== desiredFileName) {
              await driveFetch(`${BASE_URL}/files/${fileId}`, accessToken, {
                 method: 'PATCH',
@@ -239,7 +246,7 @@ export async function syncEntryToDrive(entry: JournalEntry, accessToken: string)
                 }),
              });
         } else {
-             // Ensure property is set
+             // Ensure property is set even if name didn't change
              await driveFetch(`${BASE_URL}/files/${fileId}`, accessToken, {
                 method: 'PATCH',
                 body: JSON.stringify({ 
@@ -319,7 +326,12 @@ export async function deleteEntryFromDrive(entry: JournalEntry, accessToken: str
 
         if (dateFolder) {
             const safeTitle = entry.title.replace(/[/\\?%*:|"<>\x00-\x1F]/g, '_').trim() || 'Untitled';
-            const namesToCheck = [`${safeTitle}.txt`, `entry-${entry.id}.txt`, 'notes.txt'];
+            const namesToCheck = [
+                entry.driveFileName,
+                `${safeTitle}.txt`, 
+                `entry-${entry.id}.txt`, 
+                'notes.txt'
+            ].filter(Boolean) as string[];
             
             for (const name of namesToCheck) {
                 const file = await findByName(name, dateFolder.id, "mimeType = 'text/plain'", accessToken);
@@ -409,7 +421,8 @@ function parseJournalText(text: string, fileMeta: any): Partial<JournalEntry> {
         mood,
         content: contentLines.join('\n').trim(),
         updatedAt: timestamp,
-        createdAt: timestamp, 
+        createdAt: timestamp,
+        driveFileName: fileMeta.name, // Store the source filename!
         images: []
     };
 }
@@ -425,7 +438,6 @@ export async function fetchAllEntriesFromDrive(accessToken: string): Promise<Jou
         const textFiles = (await resFiles.json()).files || [];
         
         // 2. Get All Images (recursive) to map them later
-        // Optimization: Only fetch images if we actually have text files
         let allImages: any[] = [];
         if (textFiles.length > 0) {
              const qImages = `'${rootId}' in ancestors and mimeType != 'application/vnd.google-apps.folder' and mimeType != 'text/plain' and trashed = false`;
@@ -442,22 +454,10 @@ export async function fetchAllEntriesFromDrive(accessToken: string): Promise<Jou
                 const partial = parseJournalText(content, tf);
                 
                 // Match Images
-                // Strategy 1: Direct Property Match (Best)
-                // Strategy 2: Parent Folder Match (fallback - if image is in 'images' subfolder of the text file's parent)
-                
                 const entryImages: JournalImage[] = [];
                 
                 const relatedImages = allImages.filter((img: any) => {
-                    // Check Property
                     if (img.appProperties?.entryId === partial.id) return true;
-                    
-                    // Check Location (Sibling 'images' folder)
-                    // Logic: TextFile Parent -> Images Folder -> Image
-                    // We don't strictly know the images folder ID easily here without a map, 
-                    // so we assume if the image has the text file's ID in its properties it's the best bet.
-                    // If no property, we skip implicit matching to avoid massive errors, 
-                    // UNLESS the text file content explicitly lists the image ID (handled below if we parsed it?)
-                    // For now, relying on properties is safest for the new sync engine.
                     return false;
                 });
 

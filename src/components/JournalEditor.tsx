@@ -1,15 +1,16 @@
 
 import React, { useEffect, useRef, useState } from 'react';
-import { Check, Image as ImageIcon, Download, X } from 'lucide-react';
+import { Check, Image as ImageIcon, Download, X, CloudUpload } from 'lucide-react';
 import { JournalEntry, JournalImage, Mood } from '../types';
 
 interface JournalEditorProps {
   entry: JournalEntry;
   onUpdate: (updatedEntry: JournalEntry) => void;
+  onSaveToCloud: () => void;
   isSaving: boolean;
 }
 
-export const JournalEditor: React.FC<JournalEditorProps> = ({ entry, onUpdate, isSaving }) => {
+export const JournalEditor: React.FC<JournalEditorProps> = ({ entry, onUpdate, onSaveToCloud, isSaving }) => {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [fullScreenImage, setFullScreenImage] = useState<JournalImage | null>(null);
 
@@ -121,6 +122,17 @@ export const JournalEditor: React.FC<JournalEditorProps> = ({ entry, onUpdate, i
             </span>
           )}
           
+          <div className="h-4 w-px bg-stone-200 mx-2"></div>
+
+          <button 
+            onClick={onSaveToCloud}
+            className="flex items-center space-x-1 p-2 hover:bg-stone-100 text-stone-500 hover:text-blue-600 rounded-md transition-colors text-xs font-medium"
+            title="Save Online to Google Drive"
+          >
+            <CloudUpload className="w-4 h-4" />
+            <span className="hidden sm:inline">Save Online</span>
+          </button>
+
           <div className="h-4 w-px bg-stone-200 mx-2"></div>
 
           <button 
