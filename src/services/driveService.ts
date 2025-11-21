@@ -467,38 +467,47 @@ export async function fetchAllEntriesFromDrive(accessToken: string): Promise<Jou
         
         const allEntries: JournalEntry[] = [];
 
-        // 3. Parse Files
-        await Promise.all(textFiles.map(async (tf: any) => {
-            try {
-                const content = await downloadText(tf.id, accessToken);
-                const partial = parseJournalText(content, tf);
-                
-                // Match Images
-                const entryImages: JournalImage[] = [];
-                
-                const relatedImages = allImages.filter((img: any) => {
-                    if (img.appProperties?.entryId === partial.id) return true;
-                    return false;
-                });
-
-                await Promise.all(relatedImages.map(async (imgFile: any) => {
-                    const base64 = await downloadImageAsBase64(imgFile.id, accessToken);
-                    entryImages.push({
-                        id: imgFile.id, 
-                        data: base64,
-                        mimeType: imgFile.mimeType
+        // 3. Parse Files with Concurrency Limit
+        // Process in chunks to avoid hitting API rate limits or browser connection limits when fetching many files
+        const CHUNK_SIZE = 5; 
+        for (let i = 0; i < textFiles.length; i += CHUNK_SIZE) {
+            const chunk = textFiles.slice(i, i + CHUNK_SIZE);
+            
+            await Promise.all(chunk.map(async (tf: any) => {
+                try {
+                    const content = await downloadText(tf.id, accessToken);
+                    const partial = parseJournalText(content, tf);
+                    
+                    // Match Images
+                    const entryImages: JournalImage[] = [];
+                    const relatedImages = allImages.filter((img: any) => {
+                        return img.appProperties?.entryId === partial.id;
                     });
-                }));
 
-                allEntries.push({
-                    ...partial as JournalEntry,
-                    images: entryImages
-                });
+                    // Download images for this entry (concurrency handled by chunk outer loop effectively)
+                    await Promise.all(relatedImages.map(async (imgFile: any) => {
+                        try {
+                            const base64 = await downloadImageAsBase64(imgFile.id, accessToken);
+                            entryImages.push({
+                                id: imgFile.id, 
+                                data: base64,
+                                mimeType: imgFile.mimeType
+                            });
+                        } catch (e) {
+                            console.warn("Failed to download image", imgFile.id);
+                        }
+                    }));
 
-            } catch (err) {
-                console.error("Error parsing file", tf.name, err);
-            }
-        }));
+                    allEntries.push({
+                        ...partial as JournalEntry,
+                        images: entryImages
+                    });
+
+                } catch (err) {
+                    console.error("Error parsing file", tf.name, err);
+                }
+            }));
+        }
 
         return allEntries;
 

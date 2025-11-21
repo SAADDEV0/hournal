@@ -79,16 +79,20 @@ export default function App() {
     }
   }, [isLoggedIn, accessToken]);
 
-  // Auto-sync on window focus to keep devices in sync
+  // Auto-sync on window focus/visibility change to keep devices in sync
   useEffect(() => {
       const onFocus = () => {
-          if (isLoggedIn && !isSyncing && accessToken) {
-              console.log("Window focused, checking for cloud updates...");
+          if (document.visibilityState === 'visible' && isLoggedIn && !isSyncing && accessToken) {
+              console.log("Window visible, checking for cloud updates...");
               handleCloudSync();
           }
       };
       window.addEventListener('focus', onFocus);
-      return () => window.removeEventListener('focus', onFocus);
+      document.addEventListener('visibilitychange', onFocus);
+      return () => {
+        window.removeEventListener('focus', onFocus);
+        document.removeEventListener('visibilitychange', onFocus);
+      };
   }, [isLoggedIn, isSyncing, accessToken]);
 
   const initGoogleAuth = (cid: string) => {
