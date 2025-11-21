@@ -79,6 +79,18 @@ export default function App() {
     }
   }, [isLoggedIn, accessToken]);
 
+  // Auto-sync on window focus to keep devices in sync
+  useEffect(() => {
+      const onFocus = () => {
+          if (isLoggedIn && !isSyncing && accessToken) {
+              console.log("Window focused, checking for cloud updates...");
+              handleCloudSync();
+          }
+      };
+      window.addEventListener('focus', onFocus);
+      return () => window.removeEventListener('focus', onFocus);
+  }, [isLoggedIn, isSyncing, accessToken]);
+
   const initGoogleAuth = (cid: string) => {
     try {
       if (!tokenClient.current) {
@@ -150,7 +162,8 @@ export default function App() {
                      setActiveEntry(updatedActive);
                  }
               } else if (mergedEntries.length > 0) {
-                  setActiveEntry(mergedEntries[0]);
+                  // Only switch if we don't have an active entry
+                  if (!activeEntry) setActiveEntry(mergedEntries[0]);
               }
           }
 
@@ -456,7 +469,8 @@ export default function App() {
         )}
 
         <main className="flex-grow flex flex-col h-full relative w-full">
-            <div className="md:hidden absolute top-4 left-4 z-10">
+            {/* Mobile Header Button - Z-Index bumped to 60 to float above editor header */}
+            <div className="md:hidden absolute top-4 left-4 z-[60]">
                 <button onClick={() => setIsMobileMenuOpen(true)} className="p-2 bg-white border border-stone-200 rounded-full shadow-sm text-stone-600">
                     <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 6h16M4 12h16M4 18h16"></path></svg>
                 </button>

@@ -432,17 +432,37 @@ export async function fetchAllEntriesFromDrive(accessToken: string): Promise<Jou
         const rootId = await getAppFolderId(accessToken);
         
         // 1. Recursive Search for ALL text files in ZenJournal folder (using ancestors)
-        // This finds files in Root, in Date folders, or nested deeper, fixing the "missed files" issue.
+        // This finds files in Root, in Date folders, or nested deeper.
+        // Added Pagination loop to ensure ALL files are retrieved, not just first 100.
+        let textFiles: any[] = [];
+        let pageToken: string | null = null;
         const qFiles = `'${rootId}' in ancestors and mimeType = 'text/plain' and trashed = false`;
-        const resFiles = await driveFetch(`${BASE_URL}/files?q=${encodeURIComponent(qFiles)}&fields=files(id,name,modifiedTime,appProperties,parents)`, accessToken);
-        const textFiles = (await resFiles.json()).files || [];
         
-        // 2. Get All Images (recursive) to map them later
+        do {
+            const res: Response = await driveFetch(
+                `${BASE_URL}/files?q=${encodeURIComponent(qFiles)}&fields=nextPageToken,files(id,name,modifiedTime,appProperties,parents)&pageSize=100${pageToken ? `&pageToken=${pageToken}` : ''}`, 
+                accessToken
+            );
+            const data: any = await res.json();
+            if (data.files) textFiles = [...textFiles, ...data.files];
+            pageToken = data.nextPageToken;
+        } while (pageToken);
+        
+        // 2. Get All Images (recursive with pagination)
         let allImages: any[] = [];
         if (textFiles.length > 0) {
              const qImages = `'${rootId}' in ancestors and mimeType != 'application/vnd.google-apps.folder' and mimeType != 'text/plain' and trashed = false`;
-             const resImages = await driveFetch(`${BASE_URL}/files?q=${encodeURIComponent(qImages)}&fields=files(id,mimeType,appProperties,parents)`, accessToken);
-             allImages = (await resImages.json()).files || [];
+             let imgPageToken: string | null = null;
+             
+             do {
+                 const resImages: Response = await driveFetch(
+                     `${BASE_URL}/files?q=${encodeURIComponent(qImages)}&fields=nextPageToken,files(id,mimeType,appProperties,parents)&pageSize=100${imgPageToken ? `&pageToken=${imgPageToken}` : ''}`, 
+                     accessToken
+                 );
+                 const imgData: any = await resImages.json();
+                 if (imgData.files) allImages = [...allImages, ...imgData.files];
+                 imgPageToken = imgData.nextPageToken;
+             } while (imgPageToken);
         }
         
         const allEntries: JournalEntry[] = [];
