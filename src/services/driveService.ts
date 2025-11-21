@@ -7,9 +7,7 @@ const UPLOAD_URL = 'https://www.googleapis.com/upload/drive/v3';
 
 export const AUTH_ERROR_MSG = 'UNAUTHENTICATED';
 
-/**
- * Helper to make authorized fetch requests
- */
+
 async function driveFetch(endpoint: string, accessToken: string, options: RequestInit = {}) {
   const headers = {
     'Authorization': `Bearer ${accessToken}`,
