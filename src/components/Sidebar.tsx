@@ -1,6 +1,6 @@
 
 import React, { useState } from 'react';
-import { Plus, Trash2, BookOpen, Cloud, CloudOff, LogOut, Settings, Loader2, Filter, Table as TableIcon, List } from 'lucide-react';
+import { Plus, Trash2, BookOpen, Cloud, CloudOff, LogOut, Settings, Loader2, Filter, Table as TableIcon, List, RefreshCw } from 'lucide-react';
 import { JournalEntry, Mood } from '../types';
 
 interface SidebarProps {
@@ -15,6 +15,7 @@ interface SidebarProps {
   isSyncing: boolean;
   onLogin: () => void;
   onLogout: () => void;
+  onSync?: () => void;
   onResetConfig: () => void;
 }
 
@@ -30,6 +31,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
   isSyncing,
   onLogin,
   onLogout,
+  onSync,
   onResetConfig
 }) => {
   
@@ -55,10 +57,15 @@ export const Sidebar: React.FC<SidebarProps> = ({
         <div className="flex items-center space-x-2 text-ink font-serif font-bold text-lg">
           <BookOpen className="w-5 h-5 text-stone-500" />
           <span>Library</span>
-          {isSyncing && (
-              <span className="flex items-center text-[10px] text-stone-400 font-sans font-normal ml-2 bg-stone-50 px-2 py-1 rounded-full">
-                  <Loader2 className="w-3 h-3 mr-1 animate-spin" /> Syncing...
-              </span>
+          {isLoggedIn && (
+            <button 
+                onClick={onSync} 
+                disabled={isSyncing}
+                className={`ml-2 p-1.5 rounded-full bg-stone-50 hover:bg-stone-100 text-stone-400 hover:text-stone-600 transition-all ${isSyncing ? 'animate-spin text-stone-600' : ''}`}
+                title="Analyze & Sync from Drive"
+            >
+                {isSyncing ? <Loader2 className="w-3 h-3" /> : <RefreshCw className="w-3 h-3" />}
+            </button>
           )}
         </div>
         

@@ -119,8 +119,7 @@ export default function App() {
                   await saveEntry(cloudEntry);
                   hasChanges = true;
               } else if (cloudEntry.updatedAt > localEntry.updatedAt) {
-                  // Cloud is newer (and likely has different content)
-                  // We update the local array and storage
+                  // Cloud is newer
                   const index = mergedEntries.findIndex(e => e.id === cloudEntry.id);
                   if (index !== -1) {
                       mergedEntries[index] = cloudEntry;
@@ -131,11 +130,9 @@ export default function App() {
           }
           
           if (hasChanges) {
-              // Re-sort and update state
               mergedEntries.sort((a, b) => b.updatedAt - a.updatedAt);
               setEntries(mergedEntries);
               if (activeEntry && mergedEntries.find(e => e.id === activeEntry.id)) {
-                 // Refresh active entry if it was updated
                  const updatedActive = mergedEntries.find(e => e.id === activeEntry.id);
                  if (updatedActive) setActiveEntry(updatedActive);
               }
@@ -385,6 +382,7 @@ export default function App() {
             isSyncing={isSyncing}
             onLogin={handleLogin}
             onLogout={handleLogout}
+            onSync={handleCloudSync}
             onResetConfig={() => setShowSetup(true)}
           />
         </div>
