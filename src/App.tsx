@@ -6,15 +6,15 @@ import { JournalEditor } from './components/JournalEditor';
 import { JournalTable } from './components/JournalTable';
 import { JournalEntry } from './types';
 import { GOOGLE_CLIENT_ID, SCOPES, AUTOSAVE_INTERVAL_MS } from './constants';
-import { syncEntryToDrive, deleteEntryFromDrive, AUTH_ERROR_MSG } from './services/driveService';
+import { syncEntryToDrive, deleteEntryFromDrive, fetchAllEntriesFromDrive, AUTH_ERROR_MSG } from './services/driveService';
 import { getAllEntries, saveEntry, deleteEntry } from './services/storage';
-import { Cloud, Settings, AlertCircle, Loader2, Trash2, Smartphone, Globe, Copy, Check } from 'lucide-react';
+import { Cloud, Settings, AlertCircle, Loader2, Trash2, Smartphone, Globe, Copy, Check, RefreshCw } from 'lucide-react';
 
 export default function App() {
   // --- State ---
   const [entries, setEntries] = useState<JournalEntry[]>([]);
   const [activeEntry, setActiveEntry] = useState<JournalEntry | null>(null);
-  const [viewMode, setViewMode] = useState<'editor' | 'table'>('editor'); // New View State
+  const [viewMode, setViewMode] = useState<'editor' | 'table'>('editor');
   const [isSaving, setIsSaving] = useState(false);
   const [isLoggedIn, setIsLoggedIn] = useState(false);
   const [isSyncing, setIsSyncing] = useState(false);
@@ -31,34 +31,38 @@ export default function App() {
   const tokenClient = useRef<any>(null);
   const lastSavedHash = useRef<string>('');
   const saveTimeoutRef = useRef<any>(null);
+  const isSavingRef = useRef(false);
+  const pendingSaveRef = useRef<JournalEntry | null>(null);
 
   // --- Initialization ---
   useEffect(() => {
-    // Load Local Data
     loadLocalEntries();
 
-    // Restore Google Session if valid
     const storedToken = localStorage.getItem('zenjournal_token');
     const storedExpiry = localStorage.getItem('zenjournal_token_expiry');
 
     if (storedToken && storedExpiry) {
       const now = Date.now();
-      // Check if token is still valid (with 60s buffer)
       if (now < parseInt(storedExpiry, 10) - 60000) {
         setAccessToken(storedToken);
         setIsLoggedIn(true);
       } else {
-        // Expired, clean up
         localStorage.removeItem('zenjournal_token');
         localStorage.removeItem('zenjournal_token_expiry');
       }
     }
 
-    // Initialize Google OAuth if Client ID is present
     if (clientId && (window as any).google) {
       initGoogleAuth(clientId);
     }
   }, [clientId]);
+
+  // Trigger Cloud Sync when logged in
+  useEffect(() => {
+    if (isLoggedIn && accessToken) {
+        handleCloudSync();
+    }
+  }, [isLoggedIn, accessToken]);
 
   const initGoogleAuth = (cid: string) => {
     try {
@@ -67,14 +71,12 @@ export default function App() {
         scope: SCOPES,
         callback: (response: any) => {
           if (response.access_token) {
-            // Default to 1 hour if expires_in is missing
             const expiresInSeconds = response.expires_in || 3599;
             const expiryTime = Date.now() + (expiresInSeconds * 1000);
 
             setAccessToken(response.access_token);
             setIsLoggedIn(true);
 
-            // Save session to local storage
             localStorage.setItem('zenjournal_token', response.access_token);
             localStorage.setItem('zenjournal_token_expiry', expiryTime.toString());
           }
@@ -91,8 +93,59 @@ export default function App() {
     setEntries(loaded);
     if (loaded.length > 0 && !activeEntry) {
       setActiveEntry(loaded[0]);
-      lastSavedHash.current = JSON.stringify(loaded[0]);
+      lastSavedHash.current = JSON.stringify({ t: loaded[0].title, c: loaded[0].content, i: loaded[0].images, m: loaded[0].mood });
     }
+  };
+
+  const handleCloudSync = async () => {
+      if (!accessToken) return;
+      setIsSyncing(true);
+      try {
+          const cloudEntries = await fetchAllEntriesFromDrive(accessToken);
+          
+          // Merge Strategy:
+          // 1. If Cloud entry exists locally, keep whichever has newer updatedAt
+          // 2. If Cloud entry is new, add it
+          
+          const localMap = new Map(entries.map(e => [e.id, e]));
+          let hasChanges = false;
+          const mergedEntries = [...entries];
+
+          for (const cloudEntry of cloudEntries) {
+              const localEntry = localMap.get(cloudEntry.id);
+              if (!localEntry) {
+                  // New entry from cloud
+                  mergedEntries.push(cloudEntry);
+                  await saveEntry(cloudEntry);
+                  hasChanges = true;
+              } else if (cloudEntry.updatedAt > localEntry.updatedAt) {
+                  // Cloud is newer (and likely has different content)
+                  // We update the local array and storage
+                  const index = mergedEntries.findIndex(e => e.id === cloudEntry.id);
+                  if (index !== -1) {
+                      mergedEntries[index] = cloudEntry;
+                      await saveEntry(cloudEntry);
+                      hasChanges = true;
+                  }
+              }
+          }
+          
+          if (hasChanges) {
+              // Re-sort and update state
+              mergedEntries.sort((a, b) => b.updatedAt - a.updatedAt);
+              setEntries(mergedEntries);
+              if (activeEntry && mergedEntries.find(e => e.id === activeEntry.id)) {
+                 // Refresh active entry if it was updated
+                 const updatedActive = mergedEntries.find(e => e.id === activeEntry.id);
+                 if (updatedActive) setActiveEntry(updatedActive);
+              }
+          }
+
+      } catch (err) {
+          console.error("Cloud sync failed", err);
+      } finally {
+          setIsSyncing(false);
+      }
   };
 
   const createNewEntry = () => {
@@ -107,10 +160,8 @@ export default function App() {
     
     setEntries([newEntry, ...entries]);
     setActiveEntry(newEntry);
-    setViewMode('editor'); // Switch to editor on create
-    lastSavedHash.current = JSON.stringify(newEntry);
-    
-    // Save immediately to local
+    setViewMode('editor'); 
+    lastSavedHash.current = JSON.stringify({ t: newEntry.title, c: newEntry.content, i: newEntry.images, m: newEntry.mood });
     saveEntry(newEntry);
   };
 
@@ -121,16 +172,13 @@ export default function App() {
 
   const confirmDelete = async () => {
     if (!entryToDelete) return;
-    
     setIsDeleting(true);
-
     const entry = entries.find(e => e.id === entryToDelete);
 
     if (entry && accessToken) {
       try {
         await deleteEntryFromDrive(entry, accessToken);
       } catch (e: any) {
-        console.error("Failed to delete from Drive", e);
         if (e.message === AUTH_ERROR_MSG) {
           handleLogout();
           alert("Session expired while deleting. Please reconnect.");
@@ -153,16 +201,13 @@ export default function App() {
   // --- Save Logic ---
   const handleUpdateEntry = (updated: JournalEntry) => {
     const entryWithTimestamp = { ...updated, updatedAt: Date.now() };
-    
     setActiveEntry(entryWithTimestamp);
-    
     setEntries(prev => {
       const updatedList = prev.map(e => e.id === entryWithTimestamp.id ? entryWithTimestamp : e);
       return updatedList.sort((a, b) => b.updatedAt - a.updatedAt);
     });
 
     if (saveTimeoutRef.current) clearTimeout(saveTimeoutRef.current);
-    
     saveTimeoutRef.current = setTimeout(() => {
       performSave(entryWithTimestamp);
     }, AUTOSAVE_INTERVAL_MS);
@@ -170,26 +215,40 @@ export default function App() {
 
   const performSave = async (entry: JournalEntry) => {
     const currentHash = JSON.stringify({ t: entry.title, c: entry.content, i: entry.images, m: entry.mood });
-    if (currentHash === lastSavedHash.current) return;
+    if (currentHash === lastSavedHash.current && !pendingSaveRef.current) return;
 
+    if (isSavingRef.current) {
+        pendingSaveRef.current = entry;
+        return;
+    }
+
+    isSavingRef.current = true;
     setIsSaving(true);
+
     try {
       await saveEntry(entry);
       lastSavedHash.current = currentHash;
-
       if (accessToken) {
         setIsSyncing(true);
         await syncEntryToDrive(entry, accessToken);
       }
     } catch (err: any) {
-      console.error("Save failed", err);
       if (err.message === AUTH_ERROR_MSG) {
         handleLogout();
-        console.warn("Session expired. Disconnected from Drive.");
       }
     } finally {
-      setIsSaving(false);
       setIsSyncing(false);
+      const nextEntry = pendingSaveRef.current;
+      pendingSaveRef.current = null;
+
+      if (nextEntry) {
+          isSavingRef.current = false; 
+          setIsSaving(false); 
+          performSave(nextEntry);
+      } else {
+          isSavingRef.current = false;
+          setIsSaving(false);
+      }
     }
   };
 
@@ -198,19 +257,14 @@ export default function App() {
     if (tokenClient.current) {
       tokenClient.current.requestAccessToken();
     } else {
-      alert("Google Auth not initialized. Please check your Client ID in settings.");
+      alert("Google Auth not initialized. Check Client ID.");
     }
   };
 
   const handleLogout = () => {
     if (accessToken && (window as any).google) {
-      try {
-        (window as any).google.accounts.oauth2.revoke(accessToken, () => {});
-      } catch (e) {
-        console.error("Revoke failed", e);
-      }
+      try { (window as any).google.accounts.oauth2.revoke(accessToken, () => {}); } catch (e) {}
     }
-    
     localStorage.removeItem('zenjournal_token');
     localStorage.removeItem('zenjournal_token_expiry');
     setAccessToken(null);
@@ -231,8 +285,7 @@ export default function App() {
       setTimeout(() => setCopied(false), 2000);
   }
 
-  // --- Views ---
-
+  // --- Setup View ---
   if (showSetup) {
     const currentOrigin = window.location.origin;
     const isLocal = currentOrigin.includes('localhost') || currentOrigin.includes('127.0.0.1');
@@ -256,7 +309,7 @@ export default function App() {
                  <div className="flex-1">
                     <h3 className="text-sm font-bold text-amber-900 mb-1">Authorize This Website</h3>
                     <p className="text-xs text-amber-800 leading-relaxed mb-2">
-                        You must add this exact URL to "Authorized JavaScript origins" in your Google Cloud Console for login to work.
+                        Add this URL to "Authorized JavaScript origins" in Google Cloud Console.
                     </p>
                     <div className="flex items-center bg-white border border-amber-200 rounded px-2 py-1.5">
                         <code className="text-xs text-stone-600 flex-1 overflow-hidden text-ellipsis font-mono">{currentOrigin}</code>
@@ -283,23 +336,17 @@ export default function App() {
               1. Go to <a href="https://console.cloud.google.com/" target="_blank" className="underline">Google Cloud Console</a>.<br/>
               2. Create a Project &gt; APIs &amp; Services &gt; Credentials.<br/>
               3. Create "OAuth Client ID" &gt; Web Application.<br/>
-              4. Paste <code className="bg-blue-100 px-1 rounded">{currentOrigin}</code> into "Authorized JavaScript origins".
             </div>
 
             {isLocal && (
                 <div className="mb-6 p-4 border border-stone-200 rounded-lg bg-stone-50">
                     <div className="flex items-center gap-2 mb-2 text-stone-800 font-bold text-xs uppercase tracking-wider">
                         <Smartphone className="w-4 h-4" />
-                        Want to use on Mobile?
+                        Mobile Testing
                     </div>
-                    <p className="text-xs text-stone-500 mb-3">
-                        You are currently on Localhost. To use this on your phone:
+                    <p className="text-xs text-stone-500">
+                        To use on phone, deploy to Netlify/Vercel and add the new URL to Google Cloud.
                     </p>
-                    <ol className="list-decimal list-inside text-xs text-stone-600 space-y-1 mb-3">
-                        <li>Drag this project folder to <strong>Netlify Drop</strong> or deploy to <strong>Vercel</strong>.</li>
-                        <li>Open the new link they give you (e.g., my-app.netlify.app).</li>
-                        <li>Add that NEW link to Google Cloud Console.</li>
-                    </ol>
                 </div>
             )}
 
@@ -307,11 +354,7 @@ export default function App() {
               Save & Connect
             </button>
             
-            <button 
-              type="button"
-              onClick={() => setShowSetup(false)}
-              className="w-full mt-3 text-stone-400 text-xs hover:text-stone-600 underline"
-            >
+            <button type="button" onClick={() => setShowSetup(false)} className="w-full mt-3 text-stone-400 text-xs hover:text-stone-600 underline">
               Skip (Offline Mode Only)
             </button>
           </form>
@@ -330,7 +373,12 @@ export default function App() {
             activeId={activeEntry?.id || null}
             viewMode={viewMode}
             onViewChange={setViewMode}
-            onSelect={(entry) => { setActiveEntry(entry); setViewMode('editor'); setIsMobileMenuOpen(false); }}
+            onSelect={(entry) => { 
+                setActiveEntry(entry); 
+                setViewMode('editor'); 
+                setIsMobileMenuOpen(false); 
+                lastSavedHash.current = JSON.stringify({ t: entry.title, c: entry.content, i: entry.images, m: entry.mood });
+            }}
             onCreate={createNewEntry}
             onDelete={handleRequestDelete}
             isLoggedIn={isLoggedIn}
@@ -342,27 +390,24 @@ export default function App() {
         </div>
 
         {isMobileMenuOpen && (
-          <div 
-            className="fixed inset-0 bg-black/20 z-20 md:hidden backdrop-blur-sm"
-            onClick={() => setIsMobileMenuOpen(false)}
-          ></div>
+          <div className="fixed inset-0 bg-black/20 z-20 md:hidden backdrop-blur-sm" onClick={() => setIsMobileMenuOpen(false)}></div>
         )}
 
         <main className="flex-grow flex flex-col h-full relative w-full">
             <div className="md:hidden absolute top-4 left-4 z-10">
-                <button 
-                    onClick={() => setIsMobileMenuOpen(true)}
-                    className="p-2 bg-white border border-stone-200 rounded-full shadow-sm text-stone-600"
-                >
+                <button onClick={() => setIsMobileMenuOpen(true)} className="p-2 bg-white border border-stone-200 rounded-full shadow-sm text-stone-600">
                     <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 6h16M4 12h16M4 18h16"></path></svg>
                 </button>
             </div>
 
-            {/* MAIN AREA LOGIC */}
             {viewMode === 'table' ? (
                  <JournalTable 
                     entries={entries} 
-                    onSelect={(entry) => { setActiveEntry(entry); setViewMode('editor'); }}
+                    onSelect={(entry) => { 
+                        setActiveEntry(entry); 
+                        setViewMode('editor');
+                        lastSavedHash.current = JSON.stringify({ t: entry.title, c: entry.content, i: entry.images, m: entry.mood });
+                    }}
                     onDelete={handleRequestDelete}
                  />
             ) : activeEntry ? (
@@ -390,31 +435,15 @@ export default function App() {
                 </div>
                 <h3 className="text-lg font-bold text-stone-900">Delete Entry?</h3>
               </div>
-              
               <p className="text-stone-600 text-sm leading-relaxed mb-6">
                 Are you sure you want to delete this journal entry? This action cannot be undone.
               </p>
-              
               <div className="flex justify-end space-x-3">
-                <button 
-                  onClick={() => !isDeleting && setEntryToDelete(null)}
-                  disabled={isDeleting}
-                  className="px-4 py-2.5 text-stone-600 text-sm font-medium hover:bg-stone-100 rounded-lg transition-colors disabled:opacity-50"
-                >
+                <button onClick={() => !isDeleting && setEntryToDelete(null)} disabled={isDeleting} className="px-4 py-2.5 text-stone-600 text-sm font-medium hover:bg-stone-100 rounded-lg transition-colors disabled:opacity-50">
                   Cancel
                 </button>
-                <button 
-                  onClick={confirmDelete}
-                  disabled={isDeleting}
-                  className="px-4 py-2.5 bg-red-600 text-white text-sm font-medium rounded-lg hover:bg-red-700 shadow-sm transition-colors flex items-center disabled:bg-red-400"
-                >
-                  {isDeleting ? (
-                    <>
-                       <Loader2 className="w-4 h-4 mr-2 animate-spin" /> Deleting...
-                    </>
-                  ) : (
-                    "Yes, Delete"
-                  )}
+                <button onClick={confirmDelete} disabled={isDeleting} className="px-4 py-2.5 bg-red-600 text-white text-sm font-medium rounded-lg hover:bg-red-700 shadow-sm transition-colors flex items-center disabled:bg-red-400">
+                  {isDeleting ? (<><Loader2 className="w-4 h-4 mr-2 animate-spin" /> Deleting...</>) : "Yes, Delete"}
                 </button>
               </div>
             </div>
