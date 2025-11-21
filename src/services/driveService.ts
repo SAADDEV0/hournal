@@ -7,7 +7,9 @@ const UPLOAD_URL = 'https://www.googleapis.com/upload/drive/v3';
 
 export const AUTH_ERROR_MSG = 'UNAUTHENTICATED';
 
-
+/**
+ * Helper to make authorized fetch requests
+ */
 async function driveFetch(endpoint: string, accessToken: string, options: RequestInit = {}) {
   const headers = {
     'Authorization': `Bearer ${accessToken}`,
@@ -30,7 +32,7 @@ async function driveFetch(endpoint: string, accessToken: string, options: Reques
 /**
  * Find a file or folder by name inside a specific parent folder
  */
-async function findByName(name: string, parentId: string | null, mimeTypeQuery: string, accessToken: string): Promise<string | null> {
+async function findByName(name: string, parentId: string | null, mimeTypeQuery: string, accessToken: string): Promise<{id: string, name: string, parents: string[]} | null> {
   // Escape single quotes for the query
   const safeName = name.replace(/'/g, "\\'");
   let query = `name = '${safeName}' and trashed = false and ${mimeTypeQuery}`;
@@ -39,11 +41,11 @@ async function findByName(name: string, parentId: string | null, mimeTypeQuery: 
   }
 
   const res = await driveFetch(
-    `${BASE_URL}/files?q=${encodeURIComponent(query)}&fields=files(id,name)`,
+    `${BASE_URL}/files?q=${encodeURIComponent(query)}&fields=files(id,name,parents)`,
     accessToken
   );
   const data = await res.json();
-  return data.files && data.files.length > 0 ? data.files[0].id : null;
+  return data.files && data.files.length > 0 ? { id: data.files[0].id, name: data.files[0].name, parents: data.files[0].parents } : null;
 }
 
 /**
@@ -74,8 +76,8 @@ async function saveImageFile(image: JournalImage, parentId: string, entryId: str
   const filename = `image-${image.id}.${ext}`;
   
   // Check if already exists
-  const existingId = await findByName(filename, parentId, "mimeType != 'application/vnd.google-apps.folder'", accessToken);
-  if (existingId) return; // Skip if exists
+  const existing = await findByName(filename, parentId, "mimeType != 'application/vnd.google-apps.folder'", accessToken);
+  if (existing) return; // Skip if exists
 
   // Convert Base64 to Blob for upload
   const base64Data = image.data.split(',')[1];
@@ -114,11 +116,12 @@ async function saveImageFile(image: JournalImage, parentId: string, entryId: str
  * Get or Create Root Folder "ZenJournal"
  */
 export async function getAppFolderId(accessToken: string): Promise<string> {
-  let rootId = await findByName(APP_FOLDER_NAME, null, "mimeType = 'application/vnd.google-apps.folder'", accessToken);
-  if (!rootId) {
-    rootId = await createFolder(APP_FOLDER_NAME, null, accessToken);
+  let root = await findByName(APP_FOLDER_NAME, null, "mimeType = 'application/vnd.google-apps.folder'", accessToken);
+  if (!root) {
+    const id = await createFolder(APP_FOLDER_NAME, null, accessToken);
+    return id;
   }
-  return rootId;
+  return root.id;
 }
 
 /**
@@ -134,7 +137,9 @@ export async function syncEntryToDrive(entry: JournalEntry, accessToken: string)
     const dateFolderName = date.toISOString().split('T')[0]; 
 
     // 3. Get or Create Date Folder
-    let dateFolderId = await findByName(dateFolderName, rootId, "mimeType = 'application/vnd.google-apps.folder'", accessToken);
+    let dateFolder = await findByName(dateFolderName, rootId, "mimeType = 'application/vnd.google-apps.folder'", accessToken);
+    let dateFolderId = dateFolder ? dateFolder.id : null;
+    
     if (!dateFolderId) {
       dateFolderId = await createFolder(dateFolderName, rootId, accessToken);
     }
@@ -153,78 +158,79 @@ export async function syncEntryToDrive(entry: JournalEntry, accessToken: string)
     const desiredFileName = `${safeTitle}.txt`;
 
     // 5. Find existing file to update
-    let fileId: string | null = null;
-    let currentFileName: string | null = null;
+    // We need to find the file wherever it is (Date folder OR Root folder for legacy rescue)
+    
+    let foundFile: { id: string, name: string, parents: string[] } | null = null;
 
-    // STRATEGY A: Search by Custom Property (Best for files created by this app)
-    const qProp = `appProperties has { key='entryId' and value='${entry.id}' } and '${dateFolderId}' in parents and trashed = false`;
-    const resProp = await driveFetch(`${BASE_URL}/files?q=${encodeURIComponent(qProp)}&fields=files(id,name)`, accessToken);
-    const dataProp = await resProp.json();
-    
-    if (dataProp.files && dataProp.files.length > 0) {
-        fileId = dataProp.files[0].id;
-        currentFileName = dataProp.files[0].name;
-    } 
-    
-    // STRATEGY B: If entry.id matches a Drive File ID format (imported files), check if that file exists
-    if (!fileId) {
-        // Simple heuristic: Drive IDs are usually long alphanumeric strings, local IDs are timestamps (numeric)
+    // Helper to search for the file in a specific folder using multiple strategies
+    const searchInFolder = async (folderId: string) => {
+        // A. Custom Property (Best)
+        const qProp = `appProperties has { key='entryId' and value='${entry.id}' } and '${folderId}' in parents and trashed = false`;
+        const resProp = await driveFetch(`${BASE_URL}/files?q=${encodeURIComponent(qProp)}&fields=files(id,name,parents)`, accessToken);
+        const dataProp = await resProp.json();
+        if (dataProp.files && dataProp.files.length > 0) return dataProp.files[0];
+
+        // B. ID Match (if entry.id is a Drive ID)
         const isDriveId = entry.id.length > 15 && isNaN(Number(entry.id)); 
         if (isDriveId) {
-            try {
-                const checkRes = await driveFetch(`${BASE_URL}/files/${entry.id}?fields=id,name,trashed`, accessToken);
-                const checkData = await checkRes.json();
-                if (checkData.id && !checkData.trashed) {
-                    fileId = checkData.id;
-                    currentFileName = checkData.name;
-                }
-            } catch (e) { 
-                // Ignore 404s
-            }
+             // If we are searching the folder the file is actually in, getting it by ID checks that constraint implicitly if we check parents later,
+             // but `files.get` doesn't support parent filtering directly. 
+             // So we stick to finding by name variants if ID isn't a property yet.
+             // Actually, if entry.id IS the file ID, we don't need to search. We just check if it exists.
+             try {
+                 const res = await driveFetch(`${BASE_URL}/files/${entry.id}?fields=id,name,parents,trashed`, accessToken);
+                 const f = await res.json();
+                 if (f.id && !f.trashed && f.parents && f.parents.includes(folderId)) return f;
+             } catch(e) {}
         }
+
+        // C. Name Match (Legacy / Fallback)
+        // 1. Desired Name
+        let f = await findByName(desiredFileName, folderId, "mimeType = 'text/plain'", accessToken);
+        if (f) return f;
+        
+        // 2. entry-{id}.txt
+        f = await findByName(`entry-${entry.id}.txt`, folderId, "mimeType = 'text/plain'", accessToken);
+        if (f) return f;
+
+        // 3. notes.txt (Very old legacy)
+        f = await findByName(`notes.txt`, folderId, "mimeType = 'text/plain'", accessToken);
+        if (f) return f;
+
+        return null;
+    };
+
+    // Step 5a: Search in Correct Date Folder
+    foundFile = await searchInFolder(dateFolderId);
+
+    // Step 5b: If not found, Search in ROOT Folder (Rescue misplaced files)
+    if (!foundFile) {
+        foundFile = await searchInFolder(rootId);
+        // If found in root, we will need to move it
     }
 
-    // STRATEGY C: Fallback - Check by Name to prevent duplicates (Legacy files)
-    if (!fileId) {
-        // Check for desired name
-        const idByName = await findByName(desiredFileName, dateFolderId, "mimeType = 'text/plain'", accessToken);
-        if (idByName) {
-            fileId = idByName;
-            currentFileName = desiredFileName;
-        }
+    // 6. Update, Rename, Move
+    if (foundFile) {
+        const fileId = foundFile.id;
         
-        // Check for legacy "notes.txt"
-        if (!fileId) {
-             const idByNotes = await findByName('notes.txt', dateFolderId, "mimeType = 'text/plain'", accessToken);
-             if (idByNotes) {
-                 fileId = idByNotes;
-                 currentFileName = 'notes.txt';
-             }
+        // MOVE if needed
+        if (!foundFile.parents.includes(dateFolderId)) {
+             const prevParents = foundFile.parents.join(',');
+             await driveFetch(`${BASE_URL}/files/${fileId}?addParents=${dateFolderId}&removeParents=${prevParents}`, accessToken, {
+                 method: 'PATCH'
+             });
         }
-        
-        // Check for legacy "entry-{id}.txt"
-        if (!fileId) {
-             const oldName = `entry-${entry.id}.txt`;
-             const idByOldName = await findByName(oldName, dateFolderId, "mimeType = 'text/plain'", accessToken);
-             if (idByOldName) {
-                 fileId = idByOldName;
-                 currentFileName = oldName;
-             }
-        }
-    }
 
-    // 6. Update or Create
-    if (fileId) {
-        // UPDATE existing file
+        // UPDATE Content
         await driveFetch(`${UPLOAD_URL}/files/${fileId}?uploadType=media`, accessToken, {
             method: 'PATCH',
             headers: { 'Content-Type': 'text/plain' },
             body: fileContent,
         });
 
-        // Rename Check & Property Injection
-        // We always patch the metadata to ensure the title matches and the ID property is set for future robust syncing
-        if (currentFileName !== desiredFileName) {
+        // RENAME & SET PROPERTY
+        // We enforce this every time to ensure consistency
+        if (foundFile.name !== desiredFileName) {
              await driveFetch(`${BASE_URL}/files/${fileId}`, accessToken, {
                 method: 'PATCH',
                 body: JSON.stringify({ 
@@ -233,7 +239,7 @@ export async function syncEntryToDrive(entry: JournalEntry, accessToken: string)
                 }),
              });
         } else {
-             // Just ensure property is set even if name is correct
+             // Ensure property is set
              await driveFetch(`${BASE_URL}/files/${fileId}`, accessToken, {
                 method: 'PATCH',
                 body: JSON.stringify({ 
@@ -264,10 +270,13 @@ export async function syncEntryToDrive(entry: JournalEntry, accessToken: string)
 
     // 7. Save Images
     if (entry.images && entry.images.length > 0) {
-      let imagesFolderId = await findByName('images', dateFolderId, "mimeType = 'application/vnd.google-apps.folder'", accessToken);
+      let imagesFolder = await findByName('images', dateFolderId, "mimeType = 'application/vnd.google-apps.folder'", accessToken);
+      let imagesFolderId = imagesFolder ? imagesFolder.id : null;
+      
       if (!imagesFolderId) {
         imagesFolderId = await createFolder('images', dateFolderId, accessToken);
       }
+      
       for (const img of entry.images) {
         await saveImageFile(img, imagesFolderId, entry.id, accessToken);
       }
@@ -302,22 +311,20 @@ export async function deleteEntryFromDrive(entry: JournalEntry, accessToken: str
             return;
         }
 
-        // 3. Try by Name (Fallback)
-        const safeTitle = entry.title.replace(/[/\\?%*:|"<>\x00-\x1F]/g, '_').trim() || 'Untitled';
-        const namesToCheck = [`${safeTitle}.txt`, `entry-${entry.id}.txt`, 'notes.txt'];
-        
-        // We need the parent date folder to safely delete by name without nuking files in other folders
+        // 3. Try by Name (Fallback) - in Date Folder
         const rootId = await getAppFolderId(accessToken);
         const date = new Date(entry.createdAt);
         const dateFolderName = date.toISOString().split('T')[0];
-        const dateFolderId = await findByName(dateFolderName, rootId, "mimeType = 'application/vnd.google-apps.folder'", accessToken);
+        const dateFolder = await findByName(dateFolderName, rootId, "mimeType = 'application/vnd.google-apps.folder'", accessToken);
 
-        if (dateFolderId) {
+        if (dateFolder) {
+            const safeTitle = entry.title.replace(/[/\\?%*:|"<>\x00-\x1F]/g, '_').trim() || 'Untitled';
+            const namesToCheck = [`${safeTitle}.txt`, `entry-${entry.id}.txt`, 'notes.txt'];
+            
             for (const name of namesToCheck) {
-                const fileId = await findByName(name, dateFolderId, "mimeType = 'text/plain'", accessToken);
-                if (fileId) {
-                     await driveFetch(`${BASE_URL}/files/${fileId}`, accessToken, { method: 'DELETE' });
-                     // Don't break, in case multiple exist? No, let's be safe.
+                const file = await findByName(name, dateFolder.id, "mimeType = 'text/plain'", accessToken);
+                if (file) {
+                     await driveFetch(`${BASE_URL}/files/${file.id}`, accessToken, { method: 'DELETE' });
                      return;
                 }
             }
@@ -361,7 +368,7 @@ function parseJournalText(text: string, fileMeta: any): Partial<JournalEntry> {
     let headerEnded = false;
 
     // Extract Title from filename if possible (more reliable than text content sometimes)
-    const nameTitle = fileMeta.name.replace(/\.txt$/, '').replace(/_/g, ' ');
+    const nameTitle = fileMeta.name.replace(/\.txt$/i, '').replace(/_/g, ' ');
     if (nameTitle && nameTitle !== 'notes' && !nameTitle.startsWith('entry-')) {
         title = nameTitle;
     }
@@ -370,9 +377,11 @@ function parseJournalText(text: string, fileMeta: any): Partial<JournalEntry> {
         const line = lines[i];
         if (!headerEnded) {
             if (line.startsWith('Title: ')) {
-                // Prefer text content title if explicitly set
                 const extractedTitle = line.substring(7).trim();
-                if (extractedTitle) title = extractedTitle;
+                // Only use text title if filename is generic
+                if (title === 'Untitled' || fileMeta.name.startsWith('entry-') || fileMeta.name === 'notes.txt') {
+                     if (extractedTitle) title = extractedTitle;
+                }
             } else if (line.startsWith('Mood: ')) {
                 mood = line.substring(6).trim() as Mood;
             } else if (line.trim() === '') {
@@ -409,61 +418,65 @@ export async function fetchAllEntriesFromDrive(accessToken: string): Promise<Jou
     try {
         const rootId = await getAppFolderId(accessToken);
         
-        // 1. Get Date Folders
-        const qFolders = `'${rootId}' in parents and mimeType = 'application/vnd.google-apps.folder' and trashed = false`;
-        const resFolders = await driveFetch(`${BASE_URL}/files?q=${encodeURIComponent(qFolders)}&fields=files(id,name)`, accessToken);
-        const dateFolders = (await resFolders.json()).files || [];
+        // 1. Recursive Search for ALL text files in ZenJournal folder (using ancestors)
+        // This finds files in Root, in Date folders, or nested deeper, fixing the "missed files" issue.
+        const qFiles = `'${rootId}' in ancestors and mimeType = 'text/plain' and trashed = false`;
+        const resFiles = await driveFetch(`${BASE_URL}/files?q=${encodeURIComponent(qFiles)}&fields=files(id,name,modifiedTime,appProperties,parents)`, accessToken);
+        const textFiles = (await resFiles.json()).files || [];
+        
+        // 2. Get All Images (recursive) to map them later
+        // Optimization: Only fetch images if we actually have text files
+        let allImages: any[] = [];
+        if (textFiles.length > 0) {
+             const qImages = `'${rootId}' in ancestors and mimeType != 'application/vnd.google-apps.folder' and mimeType != 'text/plain' and trashed = false`;
+             const resImages = await driveFetch(`${BASE_URL}/files?q=${encodeURIComponent(qImages)}&fields=files(id,mimeType,appProperties,parents)`, accessToken);
+             allImages = (await resImages.json()).files || [];
+        }
         
         const allEntries: JournalEntry[] = [];
 
-        // 2. Parallel Process Folders
-        await Promise.all(dateFolders.map(async (folder: any) => {
-            // Get Text Files
-            const qFiles = `'${folder.id}' in parents and mimeType = 'text/plain' and trashed = false`;
-            const resFiles = await driveFetch(`${BASE_URL}/files?q=${encodeURIComponent(qFiles)}&fields=files(id,name,modifiedTime,appProperties)`, accessToken);
-            const textFiles = (await resFiles.json()).files || [];
-
-            // Get Image Files (if any)
-            const imagesFolderId = await findByName('images', folder.id, "mimeType = 'application/vnd.google-apps.folder'", accessToken);
-            let imageFiles: any[] = [];
-            if (imagesFolderId) {
-                 const qImages = `'${imagesFolderId}' in parents and mimeType != 'application/vnd.google-apps.folder' and trashed = false`;
-                 const resImages = await driveFetch(`${BASE_URL}/files?q=${encodeURIComponent(qImages)}&fields=files(id,mimeType,appProperties)`, accessToken);
-                 imageFiles = (await resImages.json()).files || [];
-            }
-
-            for (const tf of textFiles) {
-                try {
-                    const content = await downloadText(tf.id, accessToken);
-                    const partial = parseJournalText(content, tf);
+        // 3. Parse Files
+        await Promise.all(textFiles.map(async (tf: any) => {
+            try {
+                const content = await downloadText(tf.id, accessToken);
+                const partial = parseJournalText(content, tf);
+                
+                // Match Images
+                // Strategy 1: Direct Property Match (Best)
+                // Strategy 2: Parent Folder Match (fallback - if image is in 'images' subfolder of the text file's parent)
+                
+                const entryImages: JournalImage[] = [];
+                
+                const relatedImages = allImages.filter((img: any) => {
+                    // Check Property
+                    if (img.appProperties?.entryId === partial.id) return true;
                     
-                    // Match Images: Prefer ID match, fallback loosely
-                    const entryImages: JournalImage[] = [];
-                    const relatedImages = imageFiles.filter((img: any) => 
-                        img.appProperties?.entryId === partial.id || 
-                        // Fallback: If we are using File ID as Entry ID, images wont match via appProp yet. 
-                        // But usually images are uploaded with the entry.
-                        // If no linkage found, we skip adding images to avoid cross-contamination
-                        false 
-                    );
+                    // Check Location (Sibling 'images' folder)
+                    // Logic: TextFile Parent -> Images Folder -> Image
+                    // We don't strictly know the images folder ID easily here without a map, 
+                    // so we assume if the image has the text file's ID in its properties it's the best bet.
+                    // If no property, we skip implicit matching to avoid massive errors, 
+                    // UNLESS the text file content explicitly lists the image ID (handled below if we parsed it?)
+                    // For now, relying on properties is safest for the new sync engine.
+                    return false;
+                });
 
-                    await Promise.all(relatedImages.map(async (imgFile: any) => {
-                        const base64 = await downloadImageAsBase64(imgFile.id, accessToken);
-                        entryImages.push({
-                            id: imgFile.id, 
-                            data: base64,
-                            mimeType: imgFile.mimeType
-                        });
-                    }));
-
-                    allEntries.push({
-                        ...partial as JournalEntry,
-                        images: entryImages
+                await Promise.all(relatedImages.map(async (imgFile: any) => {
+                    const base64 = await downloadImageAsBase64(imgFile.id, accessToken);
+                    entryImages.push({
+                        id: imgFile.id, 
+                        data: base64,
+                        mimeType: imgFile.mimeType
                     });
+                }));
 
-                } catch (err) {
-                    console.error("Error parsing file", tf.name, err);
-                }
+                allEntries.push({
+                    ...partial as JournalEntry,
+                    images: entryImages
+                });
+
+            } catch (err) {
+                console.error("Error parsing file", tf.name, err);
             }
         }));
 
@@ -474,4 +487,3 @@ export async function fetchAllEntriesFromDrive(accessToken: string): Promise<Jou
         throw error;
     }
 }
-//saadze

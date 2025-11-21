@@ -1,4 +1,3 @@
-
 import React, { useEffect, useState, useRef, useCallback } from 'react';
 import { Layout } from './components/Layout';
 import { Sidebar } from './components/Sidebar';
@@ -60,7 +59,8 @@ export default function App() {
   // Trigger Cloud Sync when logged in
   useEffect(() => {
     if (isLoggedIn && accessToken) {
-        handleCloudSync();
+        // Small delay to ensure UI is ready
+        setTimeout(() => handleCloudSync(), 500);
     }
   }, [isLoggedIn, accessToken]);
 
@@ -107,7 +107,7 @@ export default function App() {
           // 1. If Cloud entry exists locally, keep whichever has newer updatedAt
           // 2. If Cloud entry is new, add it
           
-          const localMap = new Map(entries.map(e => [e.id, e]));
+          const localMap = new Map<string, JournalEntry>(entries.map(e => [e.id, e]));
           let hasChanges = false;
           const mergedEntries = [...entries];
 
@@ -132,9 +132,14 @@ export default function App() {
           if (hasChanges) {
               mergedEntries.sort((a, b) => b.updatedAt - a.updatedAt);
               setEntries(mergedEntries);
-              if (activeEntry && mergedEntries.find(e => e.id === activeEntry.id)) {
+              // Update active entry ref if it was changed
+              if (activeEntry) {
                  const updatedActive = mergedEntries.find(e => e.id === activeEntry.id);
-                 if (updatedActive) setActiveEntry(updatedActive);
+                 if (updatedActive && updatedActive.updatedAt !== activeEntry.updatedAt) {
+                     setActiveEntry(updatedActive);
+                 }
+              } else if (mergedEntries.length > 0) {
+                  setActiveEntry(mergedEntries[0]);
               }
           }
 
@@ -226,7 +231,6 @@ export default function App() {
       await saveEntry(entry);
       lastSavedHash.current = currentHash;
       if (accessToken) {
-        setIsSyncing(true);
         await syncEntryToDrive(entry, accessToken);
       }
     } catch (err: any) {
@@ -234,17 +238,14 @@ export default function App() {
         handleLogout();
       }
     } finally {
-      setIsSyncing(false);
+      setIsSaving(false);
+      isSavingRef.current = false;
+
       const nextEntry = pendingSaveRef.current;
       pendingSaveRef.current = null;
 
       if (nextEntry) {
-          isSavingRef.current = false; 
-          setIsSaving(false); 
           performSave(nextEntry);
-      } else {
-          isSavingRef.current = false;
-          setIsSaving(false);
       }
     }
   };
