@@ -107,37 +107,48 @@ export const JournalEditor: React.FC<JournalEditorProps> = ({ entry, onUpdate, o
   return (
     <div className="flex flex-col h-full max-w-3xl mx-auto w-full bg-paper shadow-sm min-h-screen md:min-h-0 relative">
       
-      {/* Toolbar */}
-      <div className="sticky top-0 z-10 bg-white/80 backdrop-blur-sm border-b border-stone-100 px-8 py-4 flex justify-between items-center">
-        <div className="text-xs font-medium text-stone-400 uppercase tracking-widest">
+      {/* Toolbar - Z-Index increased to 50 to ensure it is above everything else */}
+      <div className="sticky top-0 z-50 bg-white/95 backdrop-blur-sm border-b border-stone-100 px-4 md:px-8 py-4 flex justify-between items-center gap-2 shadow-sm">
+        {/* Date */}
+        <div className="text-[10px] md:text-xs font-medium text-stone-400 uppercase tracking-widest truncate max-w-[100px] md:max-w-none">
           {formattedDate}
         </div>
         
-        <div className="flex items-center space-x-3">
-          {isSaving ? (
-             <span className="text-xs text-stone-400 animate-pulse">Saving...</span>
-          ) : (
-            <span className="flex items-center text-stone-300 text-xs">
-               <Check className="w-3 h-3 mr-1" /> Saved
-            </span>
-          )}
+        <div className="flex items-center gap-2 md:gap-3">
+          {/* Autosave Indicator - Hidden on mobile to save space */}
+          <div className="hidden md:block">
+            {isSaving ? (
+               <span className="text-xs text-stone-400 animate-pulse">Saving...</span>
+            ) : (
+              <span className="flex items-center text-stone-300 text-xs">
+                 <Check className="w-3 h-3 mr-1" /> Saved
+              </span>
+            )}
+          </div>
           
-          <div className="h-4 w-px bg-stone-200 mx-2"></div>
+          <div className="hidden md:block h-4 w-px bg-stone-200 mx-2"></div>
 
+          {/* PRIMARY BUTTON: Save Online */}
           <button 
-            onClick={onSaveToCloud}
-            className="flex items-center space-x-1 p-2 hover:bg-stone-100 text-stone-500 hover:text-blue-600 rounded-md transition-colors text-xs font-medium"
-            title="Save Online to Google Drive"
+            type="button"
+            onClick={(e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                onSaveToCloud();
+            }}
+            className="cursor-pointer flex items-center gap-2 px-4 py-2 bg-stone-900 hover:bg-stone-700 text-white rounded-full transition-all shadow-sm hover:shadow-md text-xs font-bold active:scale-95 whitespace-nowrap relative z-50"
+            title="Save to Google Drive"
           >
-            <CloudUpload className="w-4 h-4" />
-            <span className="hidden sm:inline">Save Online</span>
+            <CloudUpload className="w-3.5 h-3.5" />
+            <span>Save Online</span>
           </button>
 
-          <div className="h-4 w-px bg-stone-200 mx-2"></div>
+          <div className="h-4 w-px bg-stone-200 mx-1 md:mx-2"></div>
 
+          {/* Secondary Actions */}
           <button 
             onClick={() => fileInputRef.current?.click()}
-            className="p-2 hover:bg-stone-100 text-stone-500 rounded-full transition-colors"
+            className="p-2 hover:bg-stone-100 text-stone-500 rounded-full transition-colors cursor-pointer"
             title="Add Image"
           >
             <ImageIcon className="w-4 h-4" />
@@ -152,7 +163,7 @@ export const JournalEditor: React.FC<JournalEditorProps> = ({ entry, onUpdate, o
 
           <button 
             onClick={downloadAsFile}
-            className="p-2 hover:bg-stone-100 text-stone-500 rounded-full transition-colors"
+            className="p-2 hover:bg-stone-100 text-stone-500 rounded-full transition-colors cursor-pointer"
             title="Download Entry as .txt"
           >
             <Download className="w-4 h-4" />
@@ -161,16 +172,16 @@ export const JournalEditor: React.FC<JournalEditorProps> = ({ entry, onUpdate, o
       </div>
 
       {/* Content Area */}
-      <div className="flex-grow overflow-y-auto px-8 py-8 md:px-12">
+      <div className="flex-grow overflow-y-auto px-6 py-6 md:px-12 md:py-8">
         
         {/* Mood Selector */}
-        <div className="flex space-x-2 mb-6">
+        <div className="flex space-x-2 mb-6 overflow-x-auto no-scrollbar pb-2 md:pb-0">
             {moods.map((m) => (
             <button
                 key={m.value}
                 onClick={() => handleMoodChange(m.value)}
                 className={`
-                flex items-center space-x-1.5 px-4 py-2 rounded-full text-sm font-medium transition-all duration-200 transform active:scale-95
+                flex items-center space-x-1.5 px-4 py-2 rounded-full text-sm font-medium transition-all duration-200 transform active:scale-95 whitespace-nowrap cursor-pointer
                 ${entry.mood === m.value 
                     ? 'bg-stone-800 text-white shadow-md scale-105 ring-2 ring-stone-200 ring-offset-2' 
                     : 'bg-stone-100 text-stone-500 hover:bg-stone-200 hover:text-stone-700'
@@ -224,7 +235,7 @@ export const JournalEditor: React.FC<JournalEditorProps> = ({ entry, onUpdate, o
                         e.stopPropagation();
                         removeImage(img.id);
                       }}
-                      className="p-2 bg-white rounded-full shadow-md text-red-500 hover:bg-red-50"
+                      className="p-2 bg-white rounded-full shadow-md text-red-500 hover:bg-red-50 cursor-pointer"
                       title="Remove Image"
                     >
                       <X className="w-4 h-4" />
@@ -240,13 +251,13 @@ export const JournalEditor: React.FC<JournalEditorProps> = ({ entry, onUpdate, o
       {/* Full Screen Image Modal */}
       {fullScreenImage && (
         <div 
-            className="fixed inset-0 z-50 bg-black/95 backdrop-blur-sm flex flex-col items-center justify-center p-4 animate-in fade-in duration-200"
+            className="fixed inset-0 z-[100] bg-black/95 backdrop-blur-sm flex flex-col items-center justify-center p-4 animate-in fade-in duration-200"
             onClick={() => setFullScreenImage(null)}
         >
             {/* Close Button */}
             <button 
                 onClick={() => setFullScreenImage(null)}
-                className="absolute top-6 right-6 p-2 bg-white/10 hover:bg-white/20 text-white/80 hover:text-white rounded-full transition-all"
+                className="absolute top-6 right-6 p-2 bg-white/10 hover:bg-white/20 text-white/80 hover:text-white rounded-full transition-all cursor-pointer"
             >
                 <X className="w-8 h-8" />
             </button>
@@ -263,7 +274,7 @@ export const JournalEditor: React.FC<JournalEditorProps> = ({ entry, onUpdate, o
             <div className="mt-8 flex items-center gap-4" onClick={(e) => e.stopPropagation()}>
                  <button 
                     onClick={() => downloadImage(fullScreenImage)}
-                    className="flex items-center space-x-2 bg-white text-stone-900 px-6 py-3 rounded-full font-medium shadow-lg hover:bg-stone-100 hover:scale-105 transition-all active:scale-95"
+                    className="flex items-center space-x-2 bg-white text-stone-900 px-6 py-3 rounded-full font-medium shadow-lg hover:bg-stone-100 hover:scale-105 transition-all active:scale-95 cursor-pointer"
                 >
                     <Download className="w-5 h-5" />
                     <span>Download Photo</span>

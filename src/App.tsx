@@ -56,8 +56,18 @@ export default function App() {
       }
     }
 
-    if (clientId && (window as any).google) {
-      initGoogleAuth(clientId);
+    // Robust Google Auth Initialization
+    // We poll for the google object in case the script loads asynchronously later
+    if (clientId) {
+        const checkGoogle = setInterval(() => {
+            if ((window as any).google && (window as any).google.accounts) {
+                clearInterval(checkGoogle);
+                initGoogleAuth(clientId);
+            }
+        }, 500);
+        
+        // Timeout after 10 seconds to stop checking
+        setTimeout(() => clearInterval(checkGoogle), 10000);
     }
   }, [clientId]);
 
@@ -71,22 +81,25 @@ export default function App() {
 
   const initGoogleAuth = (cid: string) => {
     try {
-      tokenClient.current = (window as any).google.accounts.oauth2.initTokenClient({
-        client_id: cid,
-        scope: SCOPES,
-        callback: (response: any) => {
-          if (response.access_token) {
-            const expiresInSeconds = response.expires_in || 3599;
-            const expiryTime = Date.now() + (expiresInSeconds * 1000);
+      if (!tokenClient.current) {
+          console.log("Initializing Google Token Client...");
+          tokenClient.current = (window as any).google.accounts.oauth2.initTokenClient({
+            client_id: cid,
+            scope: SCOPES,
+            callback: (response: any) => {
+              if (response.access_token) {
+                const expiresInSeconds = response.expires_in || 3599;
+                const expiryTime = Date.now() + (expiresInSeconds * 1000);
 
-            setAccessToken(response.access_token);
-            setIsLoggedIn(true);
+                setAccessToken(response.access_token);
+                setIsLoggedIn(true);
 
-            localStorage.setItem('zenjournal_token', response.access_token);
-            localStorage.setItem('zenjournal_token_expiry', expiryTime.toString());
-          }
-        },
-      });
+                localStorage.setItem('zenjournal_token', response.access_token);
+                localStorage.setItem('zenjournal_token_expiry', expiryTime.toString());
+              }
+            },
+          });
+      }
     } catch (e) {
       console.error("Failed to init Google Auth", e);
     }
@@ -200,8 +213,9 @@ export default function App() {
 
   // --- Manual Save Logic ---
   const handleManualSaveRequest = () => {
+    console.log("Manual save requested");
     if (!isLoggedIn) {
-        // If not logged in, try to login
+        console.log("User not logged in, attempting login...");
         handleLogin();
         return;
     }
@@ -229,7 +243,6 @@ export default function App() {
     
     try {
         await syncEntryToDrive(updatedEntry, accessToken);
-        // Force update local state to reflect sync success if needed?
     } catch (err: any) {
         if (err.message === AUTH_ERROR_MSG) handleLogout();
         console.error("Manual save failed", err);
@@ -294,7 +307,17 @@ export default function App() {
     if (tokenClient.current) {
       tokenClient.current.requestAccessToken();
     } else {
-      alert("Google Auth not initialized. Check Client ID.");
+      // Try to init immediately if missed
+      if ((window as any).google) {
+         initGoogleAuth(clientId);
+         // Retry request after short delay
+         setTimeout(() => {
+             if(tokenClient.current) tokenClient.current.requestAccessToken();
+             else alert("Google Auth service not ready. Please refresh or check internet.");
+         }, 500);
+      } else {
+         alert("Google Auth script not loaded. Please check internet connection.");
+      }
     }
   };
 
@@ -493,17 +516,17 @@ export default function App() {
 
         {/* Save To Cloud Modal */}
         {showSaveModal && (
-          <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-stone-900/20 backdrop-blur-sm animate-in fade-in duration-200">
+          <div className="fixed inset-0 z-[60] flex items-center justify-center p-4 bg-stone-900/20 backdrop-blur-sm animate-in fade-in duration-200">
             <div className="bg-white rounded-xl shadow-2xl border border-stone-100 p-6 max-w-sm w-full transform transition-all scale-100">
-              <div className="flex items-center space-x-3 mb-4 text-blue-600">
-                <div className="p-2 bg-blue-50 rounded-full">
+              <div className="flex items-center space-x-3 mb-4 text-stone-900">
+                <div className="p-2 bg-stone-100 rounded-full">
                   <CloudUpload className="w-6 h-6" />
                 </div>
                 <h3 className="text-lg font-bold text-stone-900">Save to Drive</h3>
               </div>
               
               <p className="text-stone-500 text-sm mb-4">
-                 Choose a specific filename for this entry in Google Drive.
+                 Choose a filename for this entry.
               </p>
 
               <div className="mb-6">
@@ -512,7 +535,7 @@ export default function App() {
                     type="text" 
                     value={saveFileName} 
                     onChange={(e) => setSaveFileName(e.target.value)}
-                    className="w-full p-3 bg-stone-50 border border-stone-200 rounded-lg text-sm focus:outline-none focus:border-blue-400 font-mono"
+                    className="w-full p-3 bg-stone-50 border border-stone-200 rounded-lg text-sm focus:outline-none focus:border-stone-400 font-mono"
                   />
                   <p className="text-[10px] text-stone-400 mt-1 text-right">.txt will be added automatically if missing</p>
               </div>
@@ -526,9 +549,9 @@ export default function App() {
                 </button>
                 <button 
                   onClick={confirmManualSave}
-                  className="px-4 py-2.5 bg-blue-600 text-white text-sm font-medium rounded-lg hover:bg-blue-700 shadow-sm transition-colors"
+                  className="px-4 py-2.5 bg-stone-900 text-white text-sm font-medium rounded-lg hover:bg-stone-700 shadow-sm transition-colors"
                 >
-                  Save Now
+                  Save
                 </button>
               </div>
             </div>
